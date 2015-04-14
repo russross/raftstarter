@@ -1,10 +1,14 @@
 package main
 
-import "sync"
+import (
+	"database/sql"
+	"sync"
+)
 
 // Server represents the state of a single server, and is the endpoint for RPC calls.
 type Server struct {
 	sync.Mutex
+	DB *sql.DB
 
 	// the current state: one of "follower", "leader", or "candidate"
 	State string
@@ -53,7 +57,11 @@ type LogEntry struct {
 	ID   int
 	Term int
 
-	*ClientRequest
+	ClientRequest
+}
+
+func (l *LogEntry) IsNull() bool {
+	return l.ClientRequest.ClientID == ""
 }
 
 type AppendEntriesRequest struct {
