@@ -53,7 +53,7 @@ type LogEntry struct {
 	ID   int
 	Term int
 
-	ClientRequest
+	*ClientRequest
 }
 
 type AppendEntriesRequest struct {
