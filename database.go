@@ -4,17 +4,23 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
-var dbSetup = `
+var (
+	dbSetup = []string{`
 CREATE TABLE IF NOT EXISTS state (
 	current_term integer not null,
 	voted_for text
 );
-
+`,
+		`
 INSERT INTO state
 SELECT 0, NULL WHERE NOT EXISTS (SELECT 1 FROM state);
+`,
 
+		`
 CREATE TABLE IF NOT EXISTS log (
 	id integer primary key,
 	term integer not null,
@@ -25,7 +31,9 @@ CREATE TABLE IF NOT EXISTS log (
 	key text not null,
 	value text not null
 );
-`
+`,
+	}
+)
 
 func initDB(id string) (*sql.DB, error) {
 	filename := fmt.Sprintf("raft-%s.db", id)
@@ -34,26 +42,32 @@ func initDB(id string) (*sql.DB, error) {
 		log.Printf("error opening db %q: %v", filename, err)
 		return nil, err
 	}
-	_, err = db.Exec(dbSetup)
-	if err != nil {
-		log.Printf("db setup error: %v", err)
-		db.Close()
-		return nil, err
+	for _, setup := range dbSetup {
+		_, err = db.Exec(setup)
+		if err != nil {
+			log.Printf("db setup error: %v", err)
+			db.Close()
+			return nil, err
+		}
 	}
 	return db, nil
 }
 
 // getPersistent loads the persistent state of a server from the database.
-func (s *Server) getPersistent(tx *sql.Tx) error {
+func (s *Server) getPersistent(db *sql.DB) error {
 	var currentTerm int
-	var votedFor string
-	err := tx.QueryRow(`SELECT current_term, voted_for FROM state`).Scan(currentTerm, votedFor)
+	var votedFor *string
+	err := db.QueryRow(`SELECT current_term, voted_for FROM state`).Scan(&currentTerm, &votedFor)
 	if err != nil {
 		log.Printf("db error getting state: %v", err)
 		return err
 	}
 	s.CurrentTerm = currentTerm
-	s.VotedFor = votedFor
+	if votedFor == nil {
+		s.VotedFor = ""
+	} else {
+		s.VotedFor = *votedFor
+	}
 	return nil
 }
 
@@ -73,8 +87,13 @@ func (s *Server) putPersistent(tx *sql.Tx) error {
 
 // verifyLogAt confirms the existence of a log entry with the given index and term.
 func verifyLogAt(tx *sql.Tx, index, term int) (bool, error) {
+	// special case: leader has an empty log
+	if index == -1 && term == -1 {
+		return true, nil
+	}
+
 	found := false
-	err := tx.QueryRow(`SELECT 1 FROM log WHERE id = ? AND term = ?`).Scan(&found)
+	err := tx.QueryRow(`SELECT 1 FROM log WHERE id = ? AND term = ?`, index, term).Scan(&found)
 	if err == sql.ErrNoRows {
 		return false, nil
 	} else if err != nil {
@@ -130,7 +149,7 @@ func getLogEntries(tx *sql.Tx, from, to int) ([]*LogEntry, error) {
 }
 
 // saveLogEntries saves a slice of log entries, which must be in order by index.
-func (s *Server) saveLogEntries(tx *sql.Tx, entries []*LogEntry) error {
+func saveLogEntries(tx *sql.Tx, entries []*LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
